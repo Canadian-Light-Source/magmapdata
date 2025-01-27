@@ -1,0 +1,130 @@
+(* --------DST of Imported Hall probe Scan Data-------- *)
+(* Cameron Baribeau January 2025 *)
+(* Analyze loaded B-field profile in terms of discrete sine transform (DST) to predict relative sensitivities of a vibrating wire's harmonics to studied field *)
+(* Notebook formatted to prioritize plain text formatting *)
+
+
+(* ------------- *)
+(* 1:Configure Notebook for Chosen Magnet *)
+(* The "useMagnet" parameter is used in Switch statements throughout the notebook *)
+(* 3-Quadrupole Q314(14mm X 7mm Y) from quad center measured Nov 2023 (BY) *)
+(* 4-Quadrupole Q314(14mm X 7mm Y) from quad center,measured Nov 2023 (BX) *)
+useMagnet=4;(*3||4*)
+
+
+(* ------------- *)
+(* 2:Misc Settings *)
+
+(* Parameters for fine tuning *)
+(* Dial to empirically tune wire length to line up resulting harmonics with VW data *)
+wireLOffset=Switch[useMagnet,
+3,0,
+4,0];
+(* Longitudinal offset to shift the imported HP field further downstream along the wire *)
+wireFldShift=Switch[useMagnet,
+3,0.593,
+4,0.593
+];
+(* Nominal wire length [m] *)
+lWire=Switch[useMagnet,
+3,3.46,(* from CAD analysis 2024-02-21 *)
+4,3.46
+];
+(* Nominal wire length plus empirical offset *)
+lWire+=wireLOffset;
+(* Background field to subtract (if any) *)
+bBkgrd=0.3/10000;
+
+(* Define coordinates for array to be DST'd *)
+Yo=0;
+Yf=lWire;
+Yr=0.5/1000;(* step size along wire [m] *)
+
+(* Hall probe scan import directory *)
+(* ** User must set impDirHP and impFileHP accordingly or this notebook will fail to import the desired Hall probe scan ** *)
+impDirHP= "";
+(* Hall probe scan file name *)
+impFileHP="hp_scan_name.hpd";
+
+(* Hall probe scan formatting *)
+nHeaderRows=6; (* how many rows are header information in the loaded file *)
+posCol=3; (* what column is the position of interest (e.g. bench Z pos) *)
+datCol=5; (* what column is the field of interest (e.g. BY in column5) *)
+If[useMagnet==4,datCol=4,Null];(* BX in column4 *)
+
+(* Truncate some DST results to this harmonic *)
+nGraphCeil=200; 
+
+
+(* ------------- *)
+(* 3:Import B Field *)
+
+bFieldData=Import[impDirHP<>"\\"<>impFileHP];
+
+(* Optional processing of loaded data *)
+(* Save original import for reference *)
+bFieldDataOrig=bFieldData;
+(* Toss out the header rows *)
+nRows=Length[bFieldData];
+bFieldData=bFieldData[[nHeaderRows+1;;nRows]];
+(* Extract columns of interest *)
+bFieldData=Table[{bFieldData[[i,posCol]],bFieldData[[i,datCol]]},{i,Length[bFieldData]}];
+(* Convert mm to m *)
+bFieldData[[All,1]]*=0.001;
+(* Plot *)
+bFieldData3D=Table[{bFieldDataOrig[[i,posCol]],bFieldDataOrig[[i,4]],bFieldDataOrig[[i,5]],bFieldDataOrig[[i,6]]},{i,nHeaderRows+1,Length[bFieldDataOrig]}];
+ListPlot[{bFieldData3D[[All,2]],bFieldData3D[[All,3]]}]
+
+
+(* ------------- *)
+(* 4:Fold B Field onto Wire *)
+
+(* (Re)Initialize array to contain [s, B] data along wire *)
+bWire = Table[{i,0},{i,Yo,Yf,Yr}];
+nWireFldPts=Length[bWire];
+(* Apply longitudinal offsets to orient imported field data along wire *)
+wireIstart = wireFldShift/Yr;
+wireIend=wireIstart+Length[bFieldData]-1;
+(* Check for incongruity *)
+If[wireIend>Length[bWire],
+Print["Warning! Attempted to superimpose an imported field onto a wire that is longer than the wire."]
+,
+bWire[[wireIstart;;wireIend]][[2]]=bFieldData[[All,2]];
+];
+(* Plot *)
+ListPlot[bWire,PlotRange->All]
+
+(* Mint separate variable with background field subtracted (for comparison) *)
+bWireBkgrd=bWire;
+bWireBkgrd[[All,2]]-=bBkgrd;  
+
+(* Export B field array for use elsewhere *)
+Export[NotebookDirectory[]<>"\\bOut.txt",bWire]
+
+(* ------------- *)
+(* 5:DST of B field *)
+
+(* Take discrete sine series of B field and using Method II *)
+bFourier=Fourier[bWire[[All,2]]];
+bFourierDST=FourierDST[bWire[[All,2]],2];
+bBkgdFourierDST=FourierDST[bWireBkgrd[[All,2]],2];
+
+(* Check Method II manually *)
+myFourier=Table[Sum[bWire[[n,2]]*Sin[(Pi/nWireFldPts)*(n-0.5)*fourHarm],{n,nWireFldPts}],{fourHarm,nGraphCeil}];
+myFourier/=Sqrt[nWireFldPts];
+(* myFourier shall equal FourierDST Method II*)
+
+(* Normalization. Divide by rootN to make the above DST independent to bWire's number of points (aka scan resolution). Then normalize to sqrt(2L). This normalization will satisfy Parseval's theorem *)
+bFourier*=Sqrt[2lWire/nWireFldPts/Pi];
+bFourierDST*=Sqrt[2lWire/nWireFldPts/Pi];
+bBkgdFourierDST*=Sqrt[2lWire/nWireFldPts/Pi];
+
+(* Various graphs... *)
+ListLinePlot[Abs[bFourier],PlotRange->All,ImageSize->250]
+ListLinePlot[bFourierDST,PlotRange->All,ImageSize->250]
+ListLinePlot[bFourierDST[[1;;nGraphCeil]],PlotRange->All,ImageSize->350]
+
+(* Export DST of B field array for use elsewhere *)
+Export[NotebookDirectory[]<>"\\DSTbOut.txt",bFourierDST[[1;;nGraphCeil]]]
+
+(* EOF *)
