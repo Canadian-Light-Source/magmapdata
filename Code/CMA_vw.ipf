@@ -2,10 +2,10 @@
 
 // Import, Process, Graph Vibrating Wire data chapter of CLS Magnet Mapping Facility Analysis Macros
 //
-// Revision Date: January 2025
+// Revision Date: May 2025
 // Author: Cameron Baribeau
 //
-// Overview: The macros in this module handle vibrating wire frequency-scan data, including import,
+// Overview: The macros in this chapter handle vibrating wire frequency-scan data, including import,
 //	processing, and B-field reconstruction from a set of multi-harmonic frequency sweeps.
 //
 // Vibrating wire scan file name structure: <deviceName>_<###mA>_<n##>_<xy##>.txt
@@ -16,7 +16,8 @@
 //	Multi-harmonic frequency sweeps do not require the X/Y scan tag.
 //
 // Future work:
-//	- Improve usability (e.g. menu interface for global parameters), error handling, polish etc.
+//	- Improve usability (e.g. menu interface for global parameters)
+//	- Add error handling for when attempting to re-import a file, or importing files with duplicate names
 //
 // List of macros in this chapter:
 //	cma_vw_main
@@ -35,13 +36,14 @@
 //	cma_vwa_fwFitMask
 //	cma_vwa_refitFw
 //	cma_vwa_getBn
-//	cma_vwa_makeB
+//	cma_vwa_getB
 //	cma_vw_show
 //	cma_vw_showPos
 //	cma_vw_showFw
 //	cma_vw_layout
 //	cma_vw_results
 //	cma_vw_plotBn
+//	cma_vw_plotB
 //	cma_vw_plotFund
 //	cma_vw_plotN
 //	cma_vw_showAP
@@ -51,9 +53,12 @@
 
 //------------------------------------
 // Main function that scripts calls to all key subroutines
-Function cma_vw_main()
+// showResults and exportResults are boolean [1/0] to A: make summary figures and tables; B: export results CSV file
+Function cma_vw_main(showResults, exportResults)
+	Variable showResults, exportResults
 	String queryList = "No;Yes", commandStr
 	Variable i, iStart, iEnd, keepImporting
+	Variable delWireCurrGuess = 0.005					// Hard-coded 0.5% uncertainty estimate (based on current source user manual)
 	NVAR flag_skipInitImport
 	Silent 1
 	if((flag_skipInitImport == 0) || (exists("flag_skipInitImport") ==0)) 
@@ -62,8 +67,8 @@ Function cma_vw_main()
 		Execute/Q commandStr
 		Print "Vibrating wire globals initialized. Settings listed in cma_vw_init can be modified and the analysis re-ran..."
 		// Declare / establish connection to global waves created in cma_vw_init
-		Wave vwScanCurrents
-		Wave/T vwLoadedScans
+		Wave vwScans_Curr, vwScans_delCurr
+		Wave/T vwScans_Name
 		// Begin file import loop
 		do
 			// Prompt user for import
@@ -73,14 +78,16 @@ Function cma_vw_main()
 			Prompt keepImporting, "More Folders to Import?", popup, queryList
 			DoPrompt "Continue / Halt Data Import",keepImporting
 		while(keepImporting == 2)
+		// Set initial guess for uncertainty in wire drive current (user can override this later)
+		vwScans_delCurr = vwScans_Curr*delWireCurrGuess
 		Print "Data Import Complete. Analyzing data..."
 	endif
 	// Establish connection to global variables created in cma_vw_init
-	NVAR sort_ByN, sort_ByStr, flag_printOut, flag_skipInitImport, flag_export
+	NVAR sort_ByN, sort_ByStr, flag_skipInitImport
 	// Also establish connection to global waves if this is not our first time through _main...
 	if(flag_skipInitImport == 1)
-		Wave vwScanCurrents
-		Wave/T vwLoadedScans
+		Wave vwScans_Curr, vwScans_delCurr
+		Wave/T vwScans_Name
 	endif
 	// Set flag to skip initialization and import on follow-up runs
 	flag_skipInitImport = 1
@@ -91,14 +98,14 @@ Function cma_vw_main()
 	commandStr = "cma_vwa_getFw()"
 	Execute commandStr
 	// Sort data
-	Wave vwScanModes, vwScan_MaxAmps, vw_fundFreq, vwScan_SinNs, vw_Tavg
+	Wave vwScans_Harm, vwScans_MxNrmAmp, vwScans_SinN, vwScans_CosN, vwScans_avgTemp
 	if(sort_ByN == 1)
 		Print "Sorting Data by mode number..."
-		Sort vwScanModes, vwLoadedScans, vwScan_MaxAmps, vwScanCurrents, vwScanModes, vw_fundFreq, vwScan_SinNs, vw_Tavg
+		Sort vwScans_Harm, vwScans_Name, vwScans_MxNrmAmp, vwScans_Curr, vwScans_delCurr, vwScans_Harm, vwScans_SinN, vwScans_CosN, vwScans_avgTemp
 	endif
 	if(sort_ByStr == 1)
 		Print "Sorting Data by mode strength..."
-		Sort/R vwScan_MaxAmps, vwLoadedScans, vwScan_MaxAmps, vwScanCurrents, vwScanModes, vw_fundFreq, vwScan_SinNs, vw_Tavg
+		Sort/R vwScans_MxNrmAmp, vwScans_Name, vwScans_MxNrmAmp, vwScans_Curr, vwScans_delCurr, vwScans_Harm, vwScans_SinN, vwScans_CosN, vwScans_avgTemp
 	endif
 	// Further analysis (everything else...)
 	commandStr = "cma_vwa_fitFw()"
@@ -107,13 +114,15 @@ Function cma_vw_main()
 	commandStr = "cma_vwa_getBn()"
 	Execute commandStr
 	Print "Reconstructing Field..."
-	commandStr = "cma_vwa_makeB(0, DimSize(vwScanModes,0))"
+	commandStr = "cma_vwa_getB(0, DimSize(vwScans_Harm,0))"
 	Execute commandStr
-	// Make summary table
-	commandStr = "cma_vw_results()"
-	Execute commandStr
-	// Export results, if requirested
-	if(flag_export == 1)
+	// Visualize some results -- summary tables and graphs -- if requested
+	if(showResults == 1)
+		commandStr = "cma_vw_results()"
+		Execute commandStr
+	endif
+	// Export results, if requested
+	if(exportResults == 1)
 		commandStr = "cma_vw_export()"
 		Execute commandStr
 	endif
@@ -125,47 +134,55 @@ EndMacro
 Proc cma_vw_init()
 	// Import default parameter values into vwDefaults
 	cma_vw_impDefaults()
-	Make/T/O/N=1 vwLoadedScans=""			// Wave containing names of all loaded vibrating wire scans
-	Make/O/N=1 vwScanCurrents=0			// Wave containing drive current [A] for each imported wire scan
-	Make/O/N=1 vwScanModes=0				// Wave containing harmonic number for each imported wire scan
-	Make/O/N=1 vwScan_SinNs				// Wave containing relative amplitudes at position detector for each wire scan
-	Make/O/N=1 vw_fundFreq					// Wave containing calculated frequency of n=1 harmoninc for each wire scan
-	Make/O/N=1 vw_Tavg						// Wave containing average temperature for each wire scan
-	DeletePoints 0,1, vwLoadedScans, vwScanCurrents, vwScanModes, vw_fundFreq, vwScan_SinNs, vw_Tavg
+	Make/T/O/N=1 vwScans_Name=""			// Wave containing names of all loaded vibrating wire scans
+	Make/O/N=1 vwScans_Curr = 0			// Wave containing drive current [A] for each imported wire scan
+	Make/O/N=1 vwScans_delCurr = 0			// Wave containing estimated uncertainty in drive current [A] for each wire scan
+	Make/O/N=1 vwScans_Harm = 0			// Wave containing harmonic number for each imported wire scan
+	Make/O/N=1 vwScans_SinN				// Wave containing relative amplitudes at position detector for each wire scan
+	Make/O/N=1 vwScans_CosN				// Error term for vwScans_SinN
+	Make/O/N=1 vwScans_avgTemp			// Wave containing average temperature for each wire scan
+	DeletePoints 0,1, vwScans_Name, vwScans_Curr, vwScans_delCurr, vwScans_Harm, vwScans_SinN, vwScans_CosN, vwScans_avgTemp
+	// ------
 	// Declaration of global strings and variables...
 	String /G deviceName = ""
-	Variable /G photogateNodeCutoff = str2num(vwDefaults[8])	// Ignore modes where SIN( xSensor * n * Pi / wireLength) falls below this threshold
-	Variable /G photgateCal1 = str2num(vwDefaults[9]) 		// Wire position detector amplitude [V] to wire displacement [um] (HRZ position detector)
-	Variable /G photgateCal2 = str2num(vwDefaults[10]) 		// Wire position (VRT position detector)
+	Variable /G vwSensorNodeCutoff = str2num(vwDefaults[8])	// Ignore modes where SIN( xSensor * n * Pi / wireLength) falls below this threshold
+	Variable /G vwSensorCal1 = str2num(vwDefaults[9]) 	// Wire position voltage to displacement calibration, [um/V] (HRZ position detector)
+	Variable /G vwSensorCal2 = str2num(vwDefaults[10]) 	// Wire position (VRT position detector)
 	Variable /G wireLength = str2num(vwDefaults[11])		// [m]
 	Variable /G xSensor_ch1 = str2num(vwDefaults[12])	// [m]
 	Variable /G xSensor_ch2 = str2num(vwDefaults[13])	// [m]
-	Variable /G wireMassPerL = str2num(vwDefaults[14])	// Wire mass density [kg/m]
+	Variable /G wireMperL = str2num(vwDefaults[14])		// Wire mass density [kg/m]
 	Variable /G phCleaner1 = str2num(vwDefaults[15])	// Threshold under which adjacent phase data are considered flat
 	Variable /G phCleaner2 = str2num(vwDefaults[16])	// Threshold over which an isolated phase datum is considered an outlier, hence omitted from Fw fitting
 	Variable /G phCleaner3 = str2num(vwDefaults[17])	// Threshold over which the SDEV of a phase measurement is considered too large, hence omitted from Fw fitting
-	Variable /G tempResult = 0				// Global variable used to clumsily pass results between subroutines
+	Variable /G wireLengthErr = str2num(vwDefaults[20])	// Error estimate in measured wire length [m]
+	Variable /G wireMperLErr = str2num(vwDefaults[21]) 	// Error estimate in measured wire mass density [kg/m]
+	Variable /G xSensorErr = str2num(vwDefaults[22])	// Error estimate in position of wire vibration sensor [m]
+	Variable /G vwSenCalErr = str2num(vwDefaults[23])	// Error estimate in voltage to displacement calibration factor [um/V]
+	Variable /G tempResult = 0						// Global variable used to clumsily pass results between subroutines
+	// ------
 	// Declaration of global user parameters (can be set via Prompt at execution time)
-	Variable /G flag_skipInitImport = 0			// Flag to skip initialization and import (i.e. for re-running cma_vw_main in the same experiment)
-	Variable /G flag_export = 1					// Flag to export results at end of cma_vw_main
-	Variable /G flag_printOut = 1				// Flag to show some results at end of cma_vw_main
-	Variable /G flag_old_files = str2num(vwDefaults[21])	// Flag to expect old (pre-2023) 1channel scan file formats
-	Variable /G sort_ByStr = 0					// Flag to sort data according to mode contribution strength
-	Variable /G sort_ByN = 1					// Flag to sort data according to mode number
-	// F_w curve fitting mask settings
-	Make/O/N=6 vw_fwFitParams
-	vw_fwFitParams[0] = 0		// Binary flag to fit to (0) Temnykh's F_w or (1) wire amplitude function; *always* 0 for this work; references to this setting trimmed from code
-	vw_fwFitParams[1] = 1		// Binary flag to (0) do nothing, (1) mask data far from Fw//Aw resonance from curve fitting
-	vw_fwFitParams[2] = 0		// Binary flag to (0) do nothing; (1) mask data close to Fw/Aw resonance from curve fitting
-	vw_fwFitParams[3] = 55		// Integer flag to (0) do nothing; (N) *stop* rejecting data too close to Fw/Aw resonance above N
-	vw_fwFitParams[4] = str2num(vwDefaults[18])	// Reject points whose indices are beyond this threshold from the apparent wire resonance
-	vw_fwFitParams[5] = str2num(vwDefaults[19])	// Reject points whose wire phase data are within this amount of 90deg
-	// Hard coded error cutoff thresholds for [0] amplitude; [1,2] wire damping; and [3] frequency outlier
-	Make/O/N=4 vw_fitErrCutoffs
+	Variable /G flag_skipInitImport = 0					// Flag to skip initialization and import (i.e. for re-running cma_vw_main in the same experiment)
+	Variable /G flag_old_files = str2num(vwDefaults[24])	// Flag to expect old (pre-2023) 1channel scan file formats
+	Variable /G sort_ByStr = 0							// Flag to sort data according to mode contribution strength
+	Variable /G sort_ByN = 1							// Flag to sort data according to mode number
+	// ------
+	// Settings for F_w curve fitting mask
+	Make/O/N=5 vw_fwFitParams
+	vw_fwFitParams[0] = 1						// Binary flag to (0) do nothing, (1) mask data far from Fw/Aw resonance from curve fitting
+	vw_fwFitParams[1] = 0						// Binary flag to (0) do nothing; (1) mask data close to Fw/Aw resonance from curve fitting
+	vw_fwFitParams[2] = 55						// Integer flag to (0) do nothing; (N) *stop* rejecting data too close to Fw/Aw resonance above N
+	vw_fwFitParams[3] = str2num(vwDefaults[18])	// Reject FAR points, whose indices are beyond this threshold from observed wire resonance
+	vw_fwFitParams[4] = str2num(vwDefaults[19])	// Reject NEAR points, whose wire phase data are within this amount of 90deg
+	// ------
+	// Settings for detection of bad F_w curve fits
+	// Cutoff thresholds for [0] amplitude; [1,2] wire damping low/high; and [3] frequency outlier; [4] a_n fit coeff sigma
+	Make/O/N=5 vw_fitErrCutoffs
 	vw_fitErrCutoffs[0] = 50
 	vw_fitErrCutoffs[1] = 0.1
 	vw_fitErrCutoffs[2] = 100
 	vw_fitErrCutoffs[3] = 0.15
+	vw_fitErrCutoffs[4] = 1
 	// Clean up vwDefaults wave, no longer needed
 	KillWaves/Z vwDefaults
 EndMacro
@@ -184,7 +201,7 @@ Proc cma_vw_impDefaults()
 	// Load data
 	LoadWave /J/N/K=2/Q  /P=pathName fileName
 	// Test that incoming file has expected length
-	if(DimSize(wave0, 0) != 24)
+	if(DimSize(wave0, 0) != 27)
 		Print "Warning! Imported default parameters file has an unexpected file length."
 	endif
 	// Clean up
@@ -289,8 +306,9 @@ Proc cma_vw_impFile(fileName)
 			i += 1
 		while(i <= nCols)
 		// Append to waves tracking name, drive current, harmonic number, average temperature of each imported scan
-		Redimension /N=(DimSize(vwLoadedScans,0)+1)  vwLoadedScans, vwScanCurrents, vwScanModes, vw_fundFreq, vwScan_SinNs, vw_Tavg
-		vwLoadedScans[DimSize(vwLoadedScans,0)-1] = baseName
+		Redimension /N=(DimSize(vwScans_Name,0)+1) vwScans_Name, vwScans_Curr, vwScans_delCurr
+		Redimension /N=(DimSize(vwScans_Harm,0)+1) vwScans_Harm, vwScans_SinN, vwScans_CosN, vwScans_avgTemp
+		vwScans_Name[DimSize(vwScans_Name,0)-1] = baseName
 		// Parse scan name for wire drive current
 		if (StringMatch(baseName, "*mA_*"))
 			i = 0
@@ -303,12 +321,12 @@ Proc cma_vw_impFile(fileName)
 				i += 1
 			while(1)
 			// tstS should now be "###mA". Trim "mA" and save result
-			vwScanCurrents[DimSize(vwLoadedScans,0)-1] = str2num(ReplaceString("mA", tstS, ""))
+			vwScans_Curr[DimSize(vwScans_Name,0)-1] = str2num(ReplaceString("mA", tstS, ""))
 		endif
 		// If wire current not found in scan name, put a default value
 		if(StringMatch(baseName, "*mA_*") == 0)
 			Print "Warning! No wire drive current found in scan name during import. File: " + fileName
-			vwScanCurrents[DimSize(vwLoadedScans,0)-1] = 0.999
+			vwScans_Curr[DimSize(vwScans_Name,0)-1] = 0.999
 		endif
 		// Parse scan name for wire harmonic number
 		if(StringMatch(baseName, "*_n*"))
@@ -322,16 +340,16 @@ Proc cma_vw_impFile(fileName)
 				i += 1
 			while(1)
 			// tstS should now be "n###". Trim "n" and save result
-			vwScanModes[DimSize(vwLoadedScans,0)-1] = str2num(ReplaceString("n", tstS, ""))
+			vwScans_Harm[DimSize(vwScans_Name,0)-1] = str2num(ReplaceString("n", tstS, ""))
 		endif
 		// If mode number not found in scan name, put a default value
 		if(StringMatch(baseName, "*_n*") == 0)
 			Print "Warning! No wire harmonic number found in scan name during import. File: " + fileName
-			vwScanModes[DimSize(vwLoadedScans,0)-1] = 99
+			vwScans_Harm[DimSize(vwScans_Name,0)-1] = 99
 		endif
 		// Distill temperature wave down to an average value
 		WaveStats /Q $(columnNames[0])
-		vw_Tavg[DimSize(vwLoadedScans,0)-1] = V_avg
+		vwScans_avgTemp[DimSize(vwScans_Name,0)-1] = V_avg
 	endif
 EndMacro
 
@@ -342,13 +360,13 @@ Proc cma_vw_export(exportDir)
 	String vwTableName
 	// Table name
 	vwTableName = deviceName + "_FwFitResults"
-	vwTableName = ReplaceString("-", vwTableName, "_")	// just in case
+	vwTableName = ReplaceString("-", vwTableName, "_")	 // underscores, not dashes
 	// Build tables with given wave names
-	Edit/N=$vwTableName vwLoadedScans, vwScanModes, vw_fundFreq, fitDat_a, fitDat_b, fitDat_c, vw_SinSeriesBn
+	Edit/N=$vwTableName vwScans_Name, vwScans_Harm, vwScans_Curr, vwScans_delCurr, vwScans_SinN, vwFits_fundF, vwFits_delb, vwFits_a, vwFits_b, vwFits_c, vwFits_d, vwFits_Bcoeffs, vwFits_delBcoeffs
 	// Export path
 	NewPath /Q/O exportPath, exportDir
 	// Hardwire header info for export
-	Make/T/O/N=1 VW_header = {"ScanName, Mode Num, n=1 Freq, Fw_Coef_a, Fw_Coef_b, Fw_Coef_c,SineSeries_Bn"}
+	Make/T/O/N=1 VW_header = {"ScanName, Mode Num, WireCurrent, WireCurrentErr, ModeSensitivity, n=1 Freq, FreqErr, Fw_Coef_a, Fw_Coef_b, Fw_Coef_c, Fw_Coef_d, B_n, B_nErr"}
 	Save /O/G /M="\r\n" /P=exportPath VW_header as vwTableName + ".csv"
 	// Append tables to headers
 	SaveTableCopy /Z/N=0 /A=2 /T=2 /P=exportPath /W=$vwTableName as vwTableName + ".csv"
@@ -359,11 +377,11 @@ EndMacro
 
 //------------------------------------
 // Update and bring up key experiment parameters
-// Note! vw_ParamV is only updated at runtime. If a user changes any global variable (e.g. wireLength) then vw_ParamV can fall out of sync
+// NOTE: vw_ParamV is only updated at runtime. If a user changes any global variable (e.g. wireLength) then vw_ParamV can fall out of sync
 Proc cma_vw_params()
 	PauseUpdate; Silent 1
 	Make/O/T /N=5 vw_ParamT = {"Wire Length [m]","Wire Mass/L [m/kg]"," Detector Pos1 [m]","Detector Pos2 [m]", "Detector Gain1 [V/um]", "Detector Gain2 [V/um]"}
-	Make /O/N=5 vw_ParamV = {wireLength, wireMassPerL, xSensor_ch1, xSensor_ch2, photGateCal1, photGateCal2}
+	Make /O/N=5 vw_ParamV = {wireLength, wireMperL, xSensor_ch1, xSensor_ch2, vwSensorCal1, vwSensorCal2}
 	Edit/W=(24,382.25,281.25,557) vw_ParamT,vw_ParamV
 	ModifyTable format(Point)=1,width(Point)=35,width(vw_ParamT)=110,width(vw_ParamV)=65
 EndMacro
@@ -372,11 +390,12 @@ EndMacro
 // Set wire harmonic sensitivity coefficients from position of detector (xSensor) and length of wire
 Proc cma_vwa_getSin(chNum)
 	Variable chNum
-	Variable useXS = $("xSensor_ch" + num2str(chNum))
-	vwScan_SinNs = SIN((Pi*vwScanModes/wireLength)*useXS)
+	Variable xSensorCh = $("xSensor_ch" + num2str(chNum))
+	vwScans_SinN = SIN((Pi*vwScans_Harm/wireLength)*xSensorCh)
+	vwScans_CosN = COS((Pi*vwScans_Harm/wireLength)*xSensorCh)   // used in error propagation
 EndMacro
 //------------------------------------
-// Check for modes where the photogate is sitting too close to a node
+// Check for modes where the vibration amplitude sensor is sitting too close to a node
 Proc cma_vwa_checkSin()
 	Variable i, tst_badscan
 	PauseUpdate; Silent 1
@@ -386,15 +405,15 @@ Proc cma_vwa_checkSin()
 	// Loop through wire harmonics to log bad fits
 	i = 0
 	do
-		FindValue/V=(vwScanModes[i]) logBadScans
+		FindValue/V=(vwScans_Harm[i]) logBadScans
 		tst_badscan = V_value	
 		// Avoid double counting bad/empty scans
-		if( !(Abs(vwScan_SinNs[i]) >= photogateNodeCutoff) && (tst_badscan == -1) )
+		if( !(Abs(vwScans_SinN[i]) >= vwSensorNodeCutoff) && (tst_badscan == -1) )
 			Redimension/N=(DimSize(logNodeCutoffs,0)+1) logNodeCutoffs
-			logNodeCutoffs[DimSize(logNodeCutoffs,0)-1] = vwScanModes[i]
+			logNodeCutoffs[DimSize(logNodeCutoffs,0)-1] = vwScans_Harm[i]
 		endif
 		i+=1
-	while(i< DimSize(vwLoadedScans,0))
+	while(i< DimSize(vwScans_Name,0))
 EndMacro
 
 //------------------------------------
@@ -405,13 +424,13 @@ EndMacro
 Proc cma_vwa_getFw(chNum)
 	Variable chNum
 	PauseUpdate; Silent 1
-	String baseName, nextMag, nextDMag, nextPhase, nextDPhase, nextFreq
-	String dWire, dDWire, adjPhase, dAdjPhase, nextFw
-	Variable i = 0, loopCount = DimSize(vwLoadedScans,0)
+	String baseName, nextMagnit, nextDelMagnit, nextPhase, nextDelPhase, nextFreq
+	String wireDisp, delWireDisp, adjPhase, delAdjPhase, wireFw, delWireFw
+	Variable i = 0, loopCount = DimSize(vwScans_Name,0)
 	Variable i2, loopCount2, tstA, tstB, boolTst, iTst, isnt_badscan
-	Variable useCal = $("photgateCal" + num2str(chNum))
+	Variable useCal = $("vwSensorCal" + num2str(chNum))
 	// Prep wave for results
-	Make/O/N=(loopCount) vwScan_MaxAmps = 0
+	Make/O/N=(loopCount) vwScans_MxNrmAmp = 0
 	Make/O/N=1 tempWW
 	// Prep log waves for rejected phase and Fw data
 	Make/O/N=1 logBadPh_i, logBadFw_i
@@ -419,52 +438,52 @@ Proc cma_vwa_getFw(chNum)
 	DeletePoints 0, 1, logBadPh_i, logBadPh_scan, logBadFw_i, logBadFw_scan
 	// Loop through measurements
 	do
-		baseName = vwLoadedScans[i] + "_ch" + num2str(chNum)
-		nextFreq = vwLoadedScans[i] + "_freq"
+		baseName = vwScans_Name[i] + "_ch" + num2str(chNum)
+		nextFreq = vwScans_Name[i] + "_freq"
 		// Get wave names
-		nextMag = baseName + "_Ravg"
-		nextDMag = baseName + "_Rsdev"
+		nextMagnit = baseName + "_Ravg"
+		nextDelMagnit = baseName + "_Rsdev"
 		nextPhase = baseName + "_Pavg"
-		nextDPhase = baseName + "_Psdev"
-		dWire = baseName + "_Uavg"
-		dDWire = baseName +  "_Usdev"
+		nextDelPhase = baseName + "_Psdev"
+		wireDisp = baseName + "_Uavg"
+		delWireDisp = baseName +  "_Usdev"
 		adjPhase = baseName + "_PavgAdj"
-		dAdjPhase = baseName + "_PsdevAdj"
-		nextFw = baseName + "_Fw"
+		delAdjPhase = baseName + "_PsdevAdj"
+		wireFw = baseName + "_Fw"
+		delWireFw = baseName + "_FwSdev"
 		// Initialize results waves		
-		Make/O/N=(DimSize($nextMag,0)) $dWire, $dDWire
-		Make/O/N=(DimSize($nextPhase,0)) $adjPhase, $dAdjPhase
-		Make/O/N=(DimSize($nextMag,0)) $nextFw
-		Make/O/N=(DimSize($nextMag,0)) tempDeriv
+		Make/O/N=(DimSize($nextMagnit,0)) $wireDisp, $delWireDisp
+		Make/O/N=(DimSize($nextPhase,0)) $adjPhase, $delAdjPhase
+		Make/O/N=(DimSize($nextMagnit,0)) $wireFw, $delWireFw, delFw_senCal, delFw_wireDisp, delFw_wirePh, delFw_wireCurr
 		// ------
-		// Convert photogate voltage [V] to wire displacement [um]
-		$dWire = $nextMag / useCal
-		$dDWire = $nextDMag / useCal
+		// Convert sensor voltage [V] to wire displacement [um]
+		$wireDisp = $nextMagnit * useCal
+		$delWireDisp = $nextDelMagnit * useCal
 		// Convert from lock-in RMS reading to Pk reading
-		$dWire *= Sqrt(2)
-		$dDWire *= Sqrt(2)
-		// Normalize wire displacement to drive current and sin(xSensor) (this isn't really used)
-		Redimension /N=(DimSize($dWire,0)) tempWW
-		tempWW = Abs($dWire) / (vwScanCurrents[i]* Abs(vwScan_SinNs[i]))
+		$wireDisp *= Sqrt(2)
+		$delWireDisp *= Sqrt(2)
+		// Normalize wire displacement to drive current and sin(xSensor)   (this *can* be used for sorting the waves by strength)
+		Redimension /N=(DimSize($WireDisp,0)) tempWW
+		tempWW = Abs($WireDisp) / (vwScans_Curr[i]* Abs(vwScans_SinN[i]))
 		WaveStats/Q tempWW
-		vwScan_MaxAmps[i] = V_max
+		vwScans_MxNrmAmp[i] = V_max
 		// Where response is near a node, filter data to a small nonzero value (keep something to sort by)
-		if(Abs(vwScan_SinNs[i]) < photogateNodeCutoff)
-			vwScan_MaxAmps[i] /= 1000000
+		if(Abs(vwScans_SinN[i]) < vwSensorNodeCutoff)
+			vwScans_MxNrmAmp[i] /= 1000000
 		endif
 		// ------
 		// Duplicate phase wave and adjust the twin while keeping the original for reference
 		$adjPhase = $nextPhase
-		$dAdjPhase = $nextDPhase
+		$delAdjPhase = $nextDelPhase
 		loopCount2 = DimSize($adjPhase,0)
 		// Toss suspicious phase data (spiky outlier points and/or massive SDEV)
 		i2 = 1
 		do
 			// boolTst: test for outlier scenario
 			boolTst = (Abs($adjPhase[i2-1] - $adjPhase[i2+1]) < phCleaner1) & (Abs($adjPhase[i2] - $adjPhase[i2+1]) > phCleaner2)
-			if( boolTst || ($dadjPhase[i2] > phCleaner3) )
+			if( boolTst || ($delAdjPhase[i2] > phCleaner3) )
 				$adjPhase[i2] = NaN
-				$dAdjPhase[i2] = NaN
+				$delAdjPhase[i2] = NaN
 				// Increment and populate log waves for rejected phase data
 				Redimension/N=(DimSize(logBadPh_i,0)+1) logBadPh_scan, logBadPh_i
 				logBadPh_scan[DimSize(logBadPh_scan,0)-1] = baseName
@@ -475,9 +494,9 @@ Proc cma_vwa_getFw(chNum)
 		// Check SDEV of first and final points
 		i2 = 0
 		do
-			if( $dadjPhase[i2] > phCleaner3 )
+			if( $delAdjPhase[i2] > phCleaner3 )
 				$adjPhase[i2] = NaN
-				$dAdjPhase[i2] = NaN
+				$delAdjPhase[i2] = NaN
 				// Increment and populate log waves for rejected phase data
 				Redimension/N=(DimSize(logBadPh_i,0)+1) logBadPh_scan, logBadPh_i
 				logBadPh_scan[DimSize(logBadPh_scan,0)-1] = baseName
@@ -492,7 +511,7 @@ Proc cma_vwa_getFw(chNum)
 			// Compare present phase against last non-NaN data (or at worst the 1st index)
 			tstA = $adjPhase[i2]
 			do
-				if (NumType($nextFw[i2-iTst]) != 2)
+				if (NumType($wireFw[i2-iTst]) != 2)
 					break
 				endif	
 				iTst += 1
@@ -513,21 +532,28 @@ Proc cma_vwa_getFw(chNum)
 			$adjPhase -= 360
 		endif
 		// ------
-		// F_w = Amplitude[m] * DriveCurrent[A]/2 * cos(phi[rad])  >>  (note, dWire is in [um])
-		$nextFw = 0.5*$dWire*vwScanCurrents[i]*COS($adjPhase*Pi/180) * (0.000001)//[um]>>[m]
+		// F_w = Amplitude[m] * DriveCurrent[A]/2 * cos(phi[rad])  (wireDisp is in [um])
+		$wireFw = 0.5*$wireDisp*vwScans_Curr[i]*COS($adjPhase*Pi/180) * (0.000001)//[um]>>[m]
+		// Propagate uncertainties from wire vib amplitude, wire phase, and wire drive current into Fw
+		delFw_senCal = (vwSenCalErr/useCal) * 0.5*$wireDisp*vwScans_Curr[i]*COS($adjPhase*Pi/180)
+		delFw_wireDisp = $delWireDisp*0.5*vwScans_Curr[i]*COS($adjPhase*Pi/180)
+		delFw_wirePh = ($delAdjPhase*0.5*$wireDisp*vwScans_Curr[i]*SIN($adjPhase*Pi/180)) * Pi/180  // [deg] to [rad]
+		delFw_wireCurr = vwScans_delCurr[i]*0.5*$wireDisp*COS($adjPhase*Pi/180)		
+		// Collect error terms in quadrature, assuming uncorrelated terms (also convert [um] to [m])
+		$delWireFw = SQRT(delFw_senCal^2 + delFw_wireDisp^2 + delFw_wirePh^2 + delFw_wireCurr^2) * 0.000001
 		// ------
 		// Set scale/indexing of amplitude, phase, and Fw waves based on frequency sweep
-		SetScale/P x $nextFreq[0], Abs($nextFreq[1]-$nextFreq[0]), "", $nextMag, $nextDMag, $nextPhase, $nextDPhase
-		SetScale/P x $nextFreq[0], Abs($nextFreq[1]-$nextFreq[0]), "", $dWire, $dDwire, $adjPhase, $dAdjPhase, $nextFw
+		SetScale/P x $nextFreq[0], Abs($nextFreq[1]-$nextFreq[0]), "", $nextMagnit, $nextDelMagnit, $nextPhase, $nextDelPhase
+		SetScale/P x $nextFreq[0], Abs($nextFreq[1]-$nextFreq[0]), "", $wireDisp, $delWireDisp, $adjPhase, $delAdjPhase, $wireFw, $delWireFw
 		i += 1
 	while(i < loopCount)
 	// Fw data cleaning, read flags and assign NaNs
 	i = 0
 	if( numPnts(logBadFw_i) > 0)
 		do
-			nextFw = logBadFw_scan[i] + "_Fw"
+			wireFw = logBadFw_scan[i] + "_Fw"
 			i2 = logBadFw_i[i]
-			$nextFw[i2] = NaN
+			$wireFw[i2] = NaN
 			i += 1	
 		while(i < DimSize(logBadFw_i,0))
 	endif
@@ -537,14 +563,14 @@ Proc cma_vwa_getFw(chNum)
 	DeletePoints 0, 1, logBadScans
 	do
 		// Wave names
-		baseName = vwLoadedScans[i] + "_ch" + num2str(chNum)
-		nextFw = baseName + "_Fw"
+		baseName = vwScans_Name[i] + "_ch" + num2str(chNum)
+		wireFw = baseName + "_Fw"
 		// Check point count
-		WaveStats/Q $nextFw
+		WaveStats/Q $wireFw
 		isnt_badscan = V_npnts > 5
 		if( !isnt_badscan)
 			Redimension/N=(DimSize(logBadScans,0)+1) logBadScans
-			logBadScans[DimSize(logBadScans,0)-1] = vwScanModes[i]
+			logBadScans[DimSize(logBadScans,0)-1] = vwScans_Harm[i]
 		endif
 		i += 1
 	while(i < loopCount)
@@ -560,59 +586,63 @@ Proc cma_vwa_getFw(chNum)
 	endif	
 	KillWaves/Z tempWW
 	ResumeUpdate
+	// Clean up 
+	KillWaves/Z delFw_senCal, delFw_wireDisp, delFw_wirePh, delFw_wireCurr
 EndMacro
 
 //------------------------------------
 // Perform curve fitting on all Fw waves of the selected signal channel (1 or 2)
-// Save fitting coefficient results to waves fitDat_a, fitDat_b, fitDat_c, fitDat_d
+// Save fitting coefficient results to waves vwFits_a, vwFits_b, vwFits_c, vwFits_d
 Proc cma_vwa_fitFw(chNum)
 	Variable chNum
 	PauseUpdate; Silent 1
-	Variable i=0, nScans = DimSize(vwLoadedScans,0)
-	Variable tst_badscan, fwRMS, fwFitRMS, tst_badAmp, tst_badDamp
-	String baseName, fwName, maskName, fName, phName, fitName
+	Variable i=0, nScans = DimSize(vwScans_Name,0)
+	Variable tst_badscan, fwRMS, fwFitRMS, tst_badAmp, tst_badDamp, tst_badFitA
+	String baseName, wireFw, delWireFw, wireFwMask, wireFreq, adjPhase, wireFwFit
 	// Prep coef summary waves
-	Make/N=(nScans)/O fitDat_a, fitDat_b, fitDat_c, fitDat_d, fitDat_chiSq
-	Make/N=(nScans)/O fitSigma_a, fitSigma_b, fitSigma_c, fitSigma_d
+	Make/N=(nScans)/O vwFits_a, vwFits_b, vwFits_c, vwFits_d
+	Make/N=(nScans)/O vwFits_dela, vwFits_delb, vwFits_delc, vwFits_deld
+	Make/N=(nScans)/O vwFits_chiSq, vwFits_fundF, vwFits_delFundF
 	Make/O tempFWmask
-	// Hard coded fitting constraints for to "fitDat_c" aka K2, the damping term, and "fitDat_d" aka K3, the DC offset term
+	// Hard coded fitting constraints for to "vwFits_c" aka K2, the damping term, and "vwFits_d" aka K3, the DC offset term
 	Make/O/T/N=4 T_Constraints
 	T_Constraints[0] = {"K2 > 0","K2 < 2.5","K3 > -1","K3 < 1"}
 	Print "Fitting Fw curves..."
 	do
 		// Get wave names
-		baseName = vwLoadedScans[i] + "_ch" + num2str(chNum)
-		phName = baseName + "_PavgAdj"
-		fwName = baseName + "_Fw"
-		maskName = baseName + "_fitMask"
-		fName = vwLoadedScans[i] + "_freq"
-		fitName = "fit_" + fwName
+		baseName = vwScans_Name[i] + "_ch" + num2str(chNum)
+		adjPhase = baseName + "_PavgAdj"
+		wireFw = baseName + "_Fw"
+		delWireFw = baseName + "_FwSdev"
+		wireFwMask = baseName + "_fm"
+		wireFreq = vwScans_Name[i] + "_freq"
+		wireFwFit = "fit_" + wireFw
 		// Skip bad/empty scans
-		FindValue/V=(vwScanModes[i]) logBadScans
+		FindValue/V=(vwScans_Harm[i]) logBadScans
 		tst_badscan = V_value
 		if( tst_badscan != -1 )
 			// Make dummy/placeholder fit wave and write NaNs to results waves
-			Make/O /N=2 $fitName=0
+			Make/O /N=2 $wireFwFit=0
 			cma_vwa_wipeFit(i)
 		endif
 		// Proceed with non bad scans
 		if( tst_badscan == -1 )
 			// Set fitting mask
-			cma_vwa_fwFitMask(i, fwName, maskName, fName, phName)
+			cma_vwa_fwFitMask(i, wireFw, wireFwMask, wireFreq, adjPhase)
 			// Execute Fit
-			cma_vwa_fitFw2($fwName, $fName, fitName)
+			cma_vwa_fitFw2($wireFw, $delWireFw, $wireFreq, wireFwFit)
 			// Save fit and coefficients
-			$fitName = tempFit
-			fitDat_a[i] = W_coef[0]
-			fitDat_b[i] = W_coef[1]
-			fitDat_c[i] = W_coef[2]
-			fitDat_d[i] = W_coef[3]
+			$wireFwFit = tempFit
+			vwFits_a[i] = W_coef[0]
+			vwFits_b[i] = W_coef[1]
+			vwFits_c[i] = W_coef[2]
+			vwFits_d[i] = W_coef[3]
 			// Save errors and chi square
-			fitSigma_a[i] = W_sigma[0]
-			fitSigma_b[i] = W_sigma[1]
-			fitSigma_c[i] = W_sigma[2]
-			fitSigma_d[i] = W_sigma[3]
-			fitDat_chiSq[i] = tempResult
+			vwFits_dela[i] = W_sigma[0]
+			vwFits_delb[i] = W_sigma[1]
+			vwFits_delc[i] = W_sigma[2]
+			vwFits_deld[i] = W_sigma[3]
+			vwFits_chiSq[i] = tempResult
 		endif // endif: empty scan filter
 		i += 1
 	while(i < nScans)
@@ -624,30 +654,31 @@ Proc cma_vwa_fitFw(chNum)
 	i = 0
 	do
 		// Check if scan is in bad list
-		FindValue/V=(vwScanModes[i]) logBadScans
+		FindValue/V=(vwScans_Harm[i]) logBadScans
 		tst_badscan = V_value
 		// Get wave names
-		baseName = vwLoadedScans[i] + "_ch" + num2str(chNum)
-		fwName = baseName + "_Fw"
-		fitName = "fit_" + fwName
+		baseName = vwScans_Name[i] + "_ch" + num2str(chNum)
+		wireFw = baseName + "_Fw"
+		wireFwFit = "fit_" + wireFw
 		// Establish basic logic blocks
 		// Compare RMS of Fw and Fw_fit. If they are not in the same order of magnitude, the fit went wild
-		WaveStats/Q $fwName
+		WaveStats/Q $wireFw
 		fwRMS = V_rms
-		WaveStats/Q $fitName
+		WaveStats/Q $wireFwFit
 		fwFitRMS = V_rms
-		// Boolean 1 indicates bad scan (either based on amplitude or damping)
+		// Boolean 1 indicates bad scan (testing on amplitude, damping, amplitude uncertainty)
 		tst_badAmp = (Max(fwRMS, fwFitRMS) / Min(fwRMS, fwFitRMS)) > vw_fitErrCutoffs[0]
-		tst_badDamp = !((Abs(fitDat_c[i]) < vw_fitErrCutoffs[2]) && (Abs(fitDat_c[i]) > vw_fitErrCutoffs[1]))
+		tst_badDamp = !((Abs(vwFits_c[i]) < vw_fitErrCutoffs[2]) && (Abs(vwFits_c[i]) > vw_fitErrCutoffs[1]))
+		tst_badFitA = Abs(vwFits_dela[i]) > vw_fitErrCutoffs[4]
 		// Log bad fits, but don't double-count bad/empty scans
-		if( (tst_badscan == -1) && (tst_badAmp || tst_badDamp) )
+		if( (tst_badscan == -1) && (tst_badAmp || tst_badDamp || tst_badFitA) )
 			Redimension/N=(DimSize(logBadFits,0)+1) logBadFits
-			logBadFits[DimSize(logBadFits,0)-1] = vwScanModes[i]
+			logBadFits[DimSize(logBadFits,0)-1] = vwScans_Harm[i]
 			cma_vwa_wipeFit(i)
 		endif
 		i+=1
 	while(i< nScans)
-	// Check flagged bad fits. Some can be restored by nudging the amplitude or frequency fit coeff's
+	// Check flagged bad fits. Some can be restored by nudging the amplitude or frequency fit coeff's			
 	cma_vwa_refitFw(chNum)
 	// Clean up
 	KillWaves/Z tempFit, tempFWmask
@@ -655,9 +686,9 @@ Proc cma_vwa_fitFw(chNum)
 EndMacro
 //------------------------------------
 // Helper function, depends upon cma_vwa_fitFw to set up the global fit mask and constraints
-// Calling this function directly (without sitting up mask and constraints manually) will fail
-Function cma_vwa_fitFw2(wavFw, wavFreq, sFit)
-	Wave wavFw, wavFreq
+// Calling this function directly (without sitting up mask and constraints beforehand) will fail
+Function cma_vwa_fitFw2(wavFw, wavFwSdev, wavFreq, sFit)
+	Wave wavFw, wavFwSdev, wavFreq
 	String sFit
 	Wave tempFWmask, T_Constraints, tempDeriv, tempFit, vw_fwFitParams
 	Variable initA, initB, initC, initD
@@ -697,7 +728,7 @@ Function cma_vwa_fitFw2(wavFw, wavFreq, sFit)
 	W_coef[0] = {initA, initB, initC, initD}
 	V_FitError = 0
 	V_FitQuitReason = 0
-	FuncFit/Q/G/N/NTHR=0/W=2 cma_vwa_fitFxn W_coef wavFw /M = tempFWmask /X=wavFreq /D /C=T_Constraints
+	FuncFit/Q/G/N/NTHR=0/W=2 cma_vwa_fitFxn, W_coef, wavFw /C=T_Constraints /D /M=tempFWmask /X=wavFreq /I=1 /W=wavFwSdev
 	// Pass local result into global variable for cma_vwa_fitFw
 	tempResult = V_chisq
 	// Connect string reference to fit wave, now that it exists
@@ -737,7 +768,7 @@ Function cma_vwa_fitFw2(wavFw, wavFreq, sFit)
 			initD = snapD
 			W_coef[0] = {initA, initB, initC, initD}
 			// Retry Fit
-			FuncFit/Q/G/N/NTHR=0/W=2 cma_vwa_fitFxn W_coef wavFw /M = tempFWmask /X=wavFreq /D /C=T_Constraints
+			FuncFit/Q/G/N/NTHR=0/W=2 cma_vwa_fitFxn, W_coef, wavFw /C=T_Constraints /D /M=tempFWmask /X=wavFreq /I=1 /W=wavFwSdev
 			tempResult = V_chisq
 			// Take statistics to assess quality of fit
 			WaveStats/Q wavFw
@@ -805,47 +836,48 @@ End
 //------------------------------------
 // Compare global settings stored in vw_fwFitParams against wire harmonic (harNum)
 // Set fit mask for given F(w) curve
-Proc cma_vwa_fwFitMask(hNum, fwName, fitMaskName, fName, phName)
+Proc cma_vwa_fwFitMask(hNum, wireFw, wireFwMask, wireFreq, adjPhase)
 	Variable hNum
-	String fwName, fitMaskName, fName, phName
+	String wireFw, wireFwMask, wireFreq, adjPhase
 	Variable iMaskEdge1, iMaskEdge2
 	// Initialize fitting mask
-	Make/O /N=(DimSize($fwName,0)) $fitMaskName
-	Redimension /N=(DimSize($fwName,0)) tempFWmask
+	Make/O /N=(DimSize($wireFw,0)) $wireFwMask
+	Redimension /N=(DimSize($wireFw,0)) tempFWmask
 	// Initialize temporary waves
 	Make/O tempFWdat, tempMask1, tempMask2
-	Redimension /N=(DimSize($fwName,0)) tempMask1, tempMask2
+	Redimension /N=(DimSize($wireFw,0)) tempMask1, tempMask2
 	tempMask1 = 1
 	tempMask2 = 1
 	// Choose fit mask methodology based on global settings and given wire harmonic 
-	if(vw_fwFitParams[3] != 0)	
-		vw_fwFitParams[2] = 1
-		if(hNum >= vw_fwFitParams[3])
-			vw_fwFitParams[2] = 0
+	if(vw_fwFitParams[2] != 0)	
+		vw_fwFitParams[1] = 1
+		if(hNum >= vw_fwFitParams[2])
+			vw_fwFitParams[1] = 0
 		endif
 	endif
 	// Apply chosen fit mask methodology (if any)
-	// Identify landmark to build fit filter around, using location of sharpest slope (we assume the derivative peaks on resonance)
-	Duplicate/O $fwName, tempFWdat
-	Differentiate $fwName /X = $fName /D = tempFWdat
+	// Identify location of sharpest slope (we assume the derivative of Fw peaks on resonance)
+	WaveStats/Q $wireFw
+	Duplicate/O $wireFw, tempFWdat
+	Differentiate $wireFw /X = $wireFreq /D = tempFWdat
 	tempFWdat = Abs(tempFWdat)
 	WaveStats/Q tempFWdat
 	// Build fitting mask, Step 1 (reject data too far from resonance)
-	if(vw_fwFitParams[1] == 1)
-		iMaskEdge1 = V_maxRowLoc - vw_fwFitParams[4]
-		iMaskEdge2 = V_maxRowLoc + vw_fwFitParams[4]
+	if(vw_fwFitParams[0] == 1)
+		iMaskEdge1 = V_maxRowLoc - vw_fwFitParams[3]
+		iMaskEdge2 = V_maxRowLoc + vw_fwFitParams[3]
 		tempMask1 = 0
 		tempMask1[iMaskEdge1, iMaskEdge2] = 1
 	endif
 	// Build fitting mask, Step 2 (reject data too close to resonance)
-	if(vw_fwFitParams[2] == 1)
+	if(vw_fwFitParams[1] == 1)
 		// Reject points within a threshold of 90deg (i.e. too close to resonance)
-		tempMask2 = Limit(Floor(Abs(90 - Abs($phName))/vw_fwFitParams[5]),0,1)
+		tempMask2 = Limit(Floor(Abs(90 - Abs($adjPhase))/vw_fwFitParams[4]),0,1)
 	endif
 	// Combine waves
-	$fitMaskName = tempMask1*tempMask2
+	$wireFwMask = tempMask1*tempMask2
 	// Send mask to global wave visible to cma_vwa_fitFw2
-	tempFWmask = $fitMaskName
+	tempFWmask = $wireFwMask
 	// Clean up
 	KillWaves/Z tempFWdat, tempMask1, tempMask2
 End
@@ -853,16 +885,18 @@ End
 // Wipe coefficients from a Fw fit identified as bad (NaN's make it obvious)
 Proc cma_vwa_wipeFit(i)
 	Variable i	
-	fitDat_a[i] = NaN
-	fitDat_b[i] = NaN
-	fitDat_c[i] = NaN
-	fitDat_d[i] = NaN
-	fitSigma_a[i] = NaN
-	fitSigma_b[i] = NaN
-	fitSigma_c[i] = NaN
-	fitSigma_d[i] = NaN
-	fitDat_chiSq[i] = NaN
-	vw_fundFreq[i] = NaN
+	vwFits_a[i] = NaN
+	vwFits_b[i] = NaN
+	vwFits_c[i] = NaN
+	vwFits_d[i] = NaN
+	vwFits_dela[i] = NaN
+	vwFits_delb[i] = NaN
+	vwFits_delc[i] = NaN
+	vwFits_deld[i] = NaN
+	vwFits_chiSq[i] = NaN
+	vwFits_fundF[i] = NaN
+	vwFits_delFundF[i] = NaN
+	
 EndMacro
 //------------------------------------
 // Review list of bad fits and attempt re-fitting using different initial guesses for amplitude and frequency
@@ -876,46 +910,48 @@ Proc cma_vwa_refitFw(chNum)
 	Variable fwRMS, fwSkew, fwFitRMS, fwFitSkew, fwFitTest, fwFitBest, tst_badAmp, tst_badDamp
 	Variable minFreq, maxFreq, freqL, freqR, fwSkewL, fwSkewR, fwFitSkewL, fwFitSkewR
 	Variable V_FitError=0, V_FitQuitReason=0
-	String baseName, fwName, maskName, fName, phName, fitName
+	String baseName, wireFw, delWireFw, wireFwMask, wireFreq, wireFwFit
 	// Loop through flagged bad fits
 	nBadFitsI = DimSize(logBadFits,0)
 	nBadFitsF = nBadFitsI
 	// Update wire frequencies
-	vw_fundFreq = fitDat_b / vwScanModes
+	vwFits_fundF = vwFits_b / vwScans_Harm
+	vwFits_delFundF = vwFits_delb / vwScans_Harm
 	// In the event that there are no bad fits: Great! Do nothing
 	if(nBadFitsI >0)
 		do
 			// Get scan index for next bad fit
-			FindValue/Z/V=(logBadFits[i]) vwScanModes
+			FindValue/Z/V=(logBadFits[i]) vwScans_Harm
 			iBad = V_value
 			// Get wave names
-			baseName = vwLoadedScans[iBad] + "_ch" + num2str(chNum)
-			fwName = baseName + "_Fw"
-			fName = vwLoadedScans[iBad] + "_freq"
-			fitName = "fit_" + fwName
-			maskName = baseName + "_fitMask"
+			baseName = vwScans_Name[iBad] + "_ch" + num2str(chNum)
+			wireFw = baseName + "_Fw"
+			delWireFw = baseName + "_FwSdev"
+			wireFreq = vwScans_Name[iBad] + "_freq"
+			wireFwFit = "fit_" + wireFw
+			wireFwMask = baseName + "_fm"
 			// All rejected/tagged scans are NaN'd, so the average fundFreq (un-polluted by wonky fit results) is a safe guess
-			WaveStats/Q vw_fundFreq
+			WaveStats/Q vwFits_fundF
 			freqGuess = V_avg
 			// Skip scans where too much Fw data has been rejected as NaN (bad scan)
-			WaveStats/Q $fwName
+			WaveStats/Q $wireFw
 			if(V_npnts > 5)
 				// Establish baseline stats of Fw near L/R curve edges. Used to assess fits.
-				WaveStats/Q $fName
+				WaveStats/Q $wireFreq
 				minFreq = V_min
 				maxFreq = V_max
 				freqL = V_min + Abs(V_max-V_min)*0.3
 				freqR = V_max - Abs(V_max-V_min)*0.3
-				WaveStats/Q/R=(minFreq,freqL) $fwName
+				WaveStats/Q/R=(minFreq,freqL) $wireFw
 				fwSkewL = V_skew
-				WaveStats/Q/R=(freqR,maxFreq) $fwName
+				WaveStats/Q/R=(freqR,maxFreq) $wireFw
 				fwSkewR = V_skew
-				WaveStats/Q $fwName
+				WaveStats/Q $wireFw
 				fwRMS = V_rms
 				// Resize fitting mask to current scan
-				Redimension /N=(DimSize($fwName,0)) tempFWmask
+				Redimension /N=(DimSize($wireFw,0)) tempFWmask
 				// Assign fitting mask
-				tempFWmask = $maskName
+				tempFWmask = $wireFwMask
 				// Enter Try Loop A (sweep amplitude)
 				keepTrying = 1
 				iTryA = 1
@@ -933,14 +969,14 @@ Proc cma_vwa_refitFw(chNum)
 						// Retry fit (and reset error flags)
 						V_FitError=0
 						V_FitQuitReason=0
-						FuncFit/Q/G/N/NTHR=0/W=2 cma_vwa_fitFxn W_coef $fwName /M = tempFWmask /X=$fName /D /C=T_Constraints
+						FuncFit/Q/G/N/NTHR=0/W=2 cma_vwa_fitFxn, W_coef, $wireFw /C=T_Constraints /D /M=tempFWmask /X=$wireFreq /I=1 /W=$delWireFw
 						tempResult = V_chisq
 						// Take statistics to assess quality of fit
-						WaveStats/Q $fitName
+						WaveStats/Q $wireFwFit
 						fwFitRMS = V_rms
-						WaveStats/Q/R=(minFreq,freqL) $fitName
+						WaveStats/Q/R=(minFreq,freqL) $wireFwFit
 						fwFitSkewL = V_skew
-						WaveStats/Q/R=(freqR,maxFreq) $fitName
+						WaveStats/Q/R=(freqR,maxFreq) $wireFwFit
 						fwFitSkewR = V_skew
 						fwFitTest= 0.2*Abs(fwRMS - fwFitRMS)/fwRMS + 0.4*Abs(fwSkewL - fwFitSkewL)/Abs(fwSkewL) + 0.4*Abs(fwSkewR - fwFitSkewR)/Abs(fwSkewR)
 						// Check whether this fit clears error thresholds -- all logic signals must be zero
@@ -950,18 +986,20 @@ Proc cma_vwa_refitFw(chNum)
 						if( (tst_badAmp + tst_badDamp + V_fitError + V_FitQuitReason) == 0)
 							// On first successful fit:
 							if(keepTrying == 1)
-								fitDat_a[iBad] = W_coef[0]
-								fitDat_b[iBad] = W_coef[1]
-								fitDat_c[iBad] = W_coef[2]
-								fitDat_d[iBad] = W_coef[3]
+								//Print "nBad: " + num2str(iBad+1) + "; initA: " + num2str(initA) + "; initB: " + num2str(initB) + "; skewL: " + num2str(fwFitSkewL) + "; skewR: " + num2str(fwFitSkewR) + "; fitTst: " + num2str(fwFitTest)
+								//Print "nBad: " + num2str(iBad+1) + "; VFE: " + num2str(V_FitError) + "; W0: " + num2str(W_coef[0]) + "; W1: " + num2str(W_coef[1]) + "; W2: " + num2str(W_coef[2]) + "; W3: " + num2str(W_coef[3])
+								vwFits_a[iBad] = W_coef[0]
+								vwFits_b[iBad] = W_coef[1]
+								vwFits_c[iBad] = W_coef[2]
+								vwFits_d[iBad] = W_coef[3]
 								// Save errors and chi square
-								fitSigma_a[iBad] = W_sigma[0]
-								fitSigma_b[iBad] = W_sigma[1]
-								fitSigma_c[iBad] = W_sigma[2]
-								fitSigma_d[iBad] = W_sigma[3]
-								fitDat_chiSq[iBad] = tempResult
+								vwFits_dela[iBad] = W_sigma[0]
+								vwFits_delb[iBad] = W_sigma[1]
+								vwFits_delc[iBad] = W_sigma[2]
+								vwFits_deld[iBad] = W_sigma[3]
+								vwFits_chiSq[iBad] = tempResult
 								// Save the fit itself
-								Duplicate/O $fitName, tempFit2
+								Duplicate/O $wireFwFit, tempFit2
 								fwFitBest = fwFitTest
 								keepTrying = 0
 							endif
@@ -969,18 +1007,19 @@ Proc cma_vwa_refitFw(chNum)
 							if(keepTrying == 0)
 								// Overwrite results if the fit quality is improved
 								if(fwFitTest < fwFitBest)
-									fitDat_a[iBad] = W_coef[0]
-									fitDat_b[iBad] = W_coef[1]
-									fitDat_c[iBad] = W_coef[2]
-									fitDat_d[iBad] = W_coef[3]
+									//Print "nBad: " + num2str(iBad+1) + "; initA: " + num2str(initA) + "; initB: " + num2str(initB) + "; skewL: " + num2str(fwFitSkewL) + "; skewR: " + num2str(fwFitSkewR) + "; fitTst: " + num2str(fwFitTest)
+									vwFits_a[iBad] = W_coef[0]
+									vwFits_b[iBad] = W_coef[1]
+									vwFits_c[iBad] = W_coef[2]
+									vwFits_d[iBad] = W_coef[3]
 									// Save errors and chi square
-									fitSigma_a[iBad] = W_sigma[0]
-									fitSigma_b[iBad] = W_sigma[1]
-									fitSigma_c[iBad] = W_sigma[2]
-									fitSigma_d[iBad] = W_sigma[3]
-									fitDat_chiSq[iBad] = tempResult
+									vwFits_dela[iBad] = W_sigma[0]
+									vwFits_delb[iBad] = W_sigma[1]
+									vwFits_delc[iBad] = W_sigma[2]
+									vwFits_deld[iBad] = W_sigma[3]
+									vwFits_chiSq[iBad] = tempResult
 									// Save the fit itself
-									tempFit2 = $fitName
+									tempFit2 = $wireFwFit
 									fwFitBest = fwFitTest
 								endif
 							endif
@@ -995,30 +1034,30 @@ Proc cma_vwa_refitFw(chNum)
 					DeletePoints i, 1, logBadFits
 					i -= 1
 					nBadFitsF -= 1
-					$fitName = tempFit2
+					$wireFwFit = tempFit2
 				endif
 			endif
 			i += 1
 		while(i < nBadFitsF)
 		// Bad fits still occasionally slip through. Final test: reject Fw fits whose calculated fund. freq stand out beyond a threshold
-		vw_fundFreq = fitDat_b / vwScanModes
+		vwFits_fundF = vwFits_b / vwScans_Harm
 		// Loop until no hi/lo outliers remain
 		keepTrying = 1
 		do
-			WaveStats/Q vw_fundFreq
+			WaveStats/Q vwFits_fundF
 			compHi = V_max - V_avg
 			compLo = V_avg - V_min
 			// Reject too large max
 			if( compHi > vw_fitErrCutoffs[3] )
 				Redimension/N=(DimSize(logBadFits,0)+1) logBadFits
-				logBadFits[DimSize(logBadFits,0)-1] = vwScanModes[V_maxloc]
+				logBadFits[DimSize(logBadFits,0)-1] = vwScans_Harm[V_maxloc]
 				cma_vwa_wipeFit(V_maxloc)
 				nBadFitsF += 1
 			endif
 			// Reject too low min
 			if( compLo > vw_fitErrCutoffs[3] )
 				Redimension/N=(DimSize(logBadFits,0)+1) logBadFits
-				logBadFits[DimSize(logBadFits,0)-1] = vwScanModes[V_minloc]
+				logBadFits[DimSize(logBadFits,0)-1] = vwScans_Harm[V_minloc]
 				cma_vwa_wipeFit(V_minloc)
 				nBadFitsF += 1
 			endif
@@ -1036,53 +1075,84 @@ EndMacro
 //------------------------------------
 // Calculate B_n cofficients of sine series representation of B-field across vibrating wire, applying some 
 //	filtering for measurements that may produce bad/overwhelming contributions to the reconstructed field
-Proc cma_vwa_getBn()
+Proc cma_vwa_getBn(chNum)
+	Variable chNum
 	Variable i = 0
 	Variable testA, testB, testC
+	Variable dBco_an, dBco_ss, dBco_wireL, dBco_wireCurr, dBco_wireMperL
+	Variable xSensorCh = $("xSensor_ch" + num2str(chNum))
 	PauseUpdate; Silent 1
 	// Prep results wave
-	Make/N=(DimSize(vwLoadedScans,0))/O vw_SinSeriesBn = 0
+	Make/N=(DimSize(vwScans_Name,0))/O vwFits_Bcoeffs = 0
+	Make/N=(DimSize(vwScans_Name,0))/O vwFits_delBcoeffs = 0
 	// Re-check for any modes sitting on a wire node
 	cma_vwa_checkSin()
 	// Loop through wire harmonics
 	do
 		// Check if scan index is tagged as bad
-		FindValue/V=(vwScanModes[i]) logBadFits
+		FindValue/V=(vwScans_Harm[i]) logBadFits
 		testA = V_value
-		FindValue/V=(vwScanModes[i]) logNodeCutoffs
+		FindValue/V=(vwScans_Harm[i]) logNodeCutoffs
 		testB = V_value
-		FindValue/V=(vwScanModes[i]) logBadScans
+		FindValue/V=(vwScans_Harm[i]) logBadScans
 		testC = V_value
 		// Reject Bn's listed in any of the above
 		if( (testA == -1) && (testB == -1) && (testC == -1) )
-			vw_SinSeriesBn[i] = fitDat_a[i] / vwScan_SinNs[i] * (2*wireMassPerL / vwScanCurrents[i]^2)
+			vwFits_Bcoeffs[i] = vwFits_a[i] / vwScans_SinN[i] * (2*wireMperL / vwScans_Curr[i]^2)
 			// Extra normalization
-			vw_SinSeriesBn[i] *= sqrt(pi)*wireLength
+			vwFits_Bcoeffs[i] *= sqrt(pi)*wireLength
+			// ------
+			// Propagate uncertainties to Bn			
+			// Fw amplitude fitting coeff term
+			dBco_an = vwFits_dela[i] * sqrt(pi)*wireLength / vwScans_SinN[i] * (2*wireMperL / vwScans_Curr[i]^2)				
+			// Sensor position term
+			dBco_ss = xSensorErr * vwScans_Harm[i] * pi*sqrt(pi)*wireLength/wireLength
+			dBco_ss *= vwFits_a[i] * (2*wireMperL / vwScans_Curr[i]^2) * vwScans_CosN[i] / (vwScans_SinN[i]^2)
+			// Wire length term
+			dBco_wireL = wireLengthErr * (2*wireMperL / vwScans_Curr[i]^2) * vwFits_a[i] * sqrt(pi)
+			dBco_wireL *= (wireLength*vwScans_SinN[i] + pi*vwScans_Harm[i]*xSensorCh*vwScans_CosN[i] )
+			dBco_wireL /= (wireLength* (vwScans_SinN[i]^2))
+			// Wire drive current term
+			dBco_wireCurr =  vwScans_delCurr[i] * vwFits_a[i] / vwScans_SinN[i] * (-4*wireMperL / vwScans_Curr[i]^3) * sqrt(pi)*wireLength
+			// Wire mass per length term
+			dBco_wireMperL = wireMperLErr * sqrt(pi)*wireLength * vwFits_a[i] / vwScans_SinN[i] * (2 / vwScans_Curr[i]^2)				
+			// Collect error terms in quadrature, assuming uncorrelated terms
+			vwFits_delBcoeffs[i] = SQRT(dBco_an^2 + dBco_ss^2 + dBco_wireL^2 + dBco_wireCurr^2 + dBco_wireMperL^2)
 		endif
 		i+=1
-	while(i< DimSize(vwLoadedScans,0))
+	while(i< DimSize(vwScans_Name,0))
 EndMacro
 
 //------------------------------------
 // Reconstruct B field across vibrating wire by summing calculated sin series B_n coefficients
-Proc cma_vwa_makeB(iStart,iEnd)
+Proc cma_vwa_getB(iStart,iEnd)
 	Variable iStart, iEnd
 	PauseUpdate; Silent 1
 	Variable nPts = wireLength*1000, i
 	// Initialize intermediate and result waves
-	Make/O/N=(nPts) rebuiltField = 0, tempSin, tempSinScaled
-	SetScale /I x 0, wireLength, tempSin, tempSinScaled, rebuiltField
+	Make/O/N=(nPts) vw_B = 0, tempSin, tempSinScaled
+	Make/O/N=(nPts) vw_delB = 0, vw_Blo, vw_Bhi
+	SetScale /I x 0, wireLength, tempSin, tempSinScaled, vw_B, vw_Blo, vw_Bhi
 	i = iStart
 	do
 		// Calculate next sine contribution
-		tempSin = sin(Pi*x * vwScanModes[i] / wireLength)
-		tempSinScaled = tempSin * vw_SinSeriesBn[i]
+		tempSin = sin(Pi*x * vwScans_Harm[i] / wireLength)
+		tempSinScaled = tempSin * vwFits_Bcoeffs[i]
 		// Add next contribution to total
-		rebuiltField += tempSinScaled
+		vw_B += tempSinScaled
+		// Error term (adding in quadrature)
+		tempSinScaled = (tempSin * vwFits_delBcoeffs[i])^2
+		vw_delB += tempSinScaled
 		i+=1
 	while(i < iEnd)
-	// Normalize field
-	rebuiltField *= sqrt(2*Pi/wireLength)
+	// SQRT quadrature error terms
+	vw_delB = sqrt(vw_delB)
+	// Normalize reconstructed fields
+	vw_B *= sqrt(2*Pi/wireLength)
+	vw_delB *= sqrt(2*Pi/wireLength)
+	// Error envelope, B field +/- 1SDEV
+	vw_Blo = vw_B - vw_delB
+	vw_Bhi = vw_B + vw_delB
 	// Cleanup
 	KillWaves/Z tempSin, tempSinScaled
 EndMacro
@@ -1096,7 +1166,7 @@ EndMacro
 //	gPerLayout: Number of plots on each 1-page Layout (e.g. 2, 3, 4, 6, 8...)
 // 	savePic: [1/0] argument to export Layouts as PNG files
 Proc cma_vw_show(chNum, nStart, nEnd, gPerLayout, savePic)
-	Variable chNum nStart, nEnd, gPerLayout, savePic
+	Variable chNum, nStart, nEnd, gPerLayout, savePic
 	Prompt chNum, "Select Lock-In Amplifier Channel [1/2]"
 	Prompt nStart, "First wire harmonic in sequence of graphs to be built" 
 	Prompt nEnd, "Last wire harmonic in sequence of graphs to be built"
@@ -1147,38 +1217,38 @@ EndMacro
 // Create many graphs, each showing w. displacement and unwrapped phase data versus freq for one mode
 Proc cma_vw_showPos(chNum, modeStart, modeEnd)
 	Variable chNum, modeStart, modeEnd
-	String baseName, fName, maskName, phiName, dphiName, wName, dwName, Cmd
+	String baseName, wireFreq, wireFwMask, phiName, dphiName, wName, dwName, Cmd
 	Variable i = modeStart, loopCount = modeEnd
 	Variable axisHi, axisLo, useI
 	PauseUpdate; Silent 1
 	// Cheat to get graph names to work: create initial graph (which has no idex) as a blank slate, never used
 	Display /N=WireAndPhase
 	SetWindow kwTopWin hide=1
-	Make/O/N=(DimSize(vwScanModes,0)) tempI
+	Make/O/N=(DimSize(vwScans_Harm,0)) tempI
 	do
 		// Find index for next desired mode number
-		tempI = Abs(vwScanModes - i)
+		tempI = Abs(vwScans_Harm - i)
 		WaveStats/Q tempI
 		useI = V_minloc
-		baseName = vwLoadedScans[useI] + "_ch" + num2str(chNum)
+		baseName = vwScans_Name[useI] + "_ch" + num2str(chNum)
 		// Create graph, get names
 		Display /N=WireAndPhase
-		fName = vwLoadedScans[useI] + "_freq"
-		maskName = baseName + "_fitMask"
+		wireFreq = vwScans_Name[useI] + "_freq"
+		wireFwMask = baseName + "_fm"
 		phiName = baseName + "_PavgAdj"
 		dphiName = baseName + "_PsdevAdj"
 		wName = baseName + "_Uavg"
 		dwName = baseName + "_Usdev"
 		// Append and format wire pos
-		AppendToGraph $wName vs $fName
+		AppendToGraph $wName vs $wireFreq
 		ErrorBars $wName Y,wave=($dwName,$dwName)
 		ModifyGraph rgb($wName) = (65280,0,0)
 		// Append and format phase difference between wire pos and drive current
-		AppendToGraph/R $phiName vs $fName
+		AppendToGraph/R $phiName vs $wireFreq
 		ErrorBars $phiName Y,wave=($dphiName,$dphiName)
 		ModifyGraph rgb($phiName) = (24576,24576,65280)
 		// Textbox
-		SprintF Cmd, "n = %s", num2str(vwScanModes[useI])
+		SprintF Cmd, "n = %s", num2str(vwScans_Harm[useI])
 		TextBox/C/N=text0/A=LT/X=0.00/Y=0.00 Cmd
 		// Formatting
 		ModifyGraph mode=4,marker=8,lstyle=1,grid(left)=2
@@ -1197,33 +1267,40 @@ EndMacro
 // Create many graphs, each showing F_w data and curve fit versus freq for one mode
 Proc cma_vw_showFw(chNum, modeStart, modeEnd)
 	Variable chNum, modeStart, modeEnd
-	String baseName, fwName, fName, fitName, maskName, Cmd
+	String baseName, wireFw, delWireFw, wireFreq, wireFwFit, wireFwMask, Cmd
 	Variable i = modeStart, loopCount = modeEnd, useI
 	PauseUpdate; Silent 1
 	// Cheat to get graph names to work: create initial graph (which has no idex) as a blank slate, never used
 	Display /N=Graph_Fw
 	SetWindow kwTopWin hide=1
-	Make/O/N=(DimSize(vwScanModes,0)) tempI
+	Make/O/N=(DimSize(vwScans_Harm,0)) tempI
 	do
 		// Find index for next desired mode number
-		tempI = Abs(vwScanModes - i)
+		tempI = Abs(vwScans_Harm - i)
 		WaveStats/Q tempI
 		useI = V_minloc
-		baseName = vwLoadedScans[useI] + "_ch" + num2str(chNum)
+		baseName = vwScans_Name[useI] + "_ch" + num2str(chNum)
 		// Create graph, get names
 		Display /N=Graph_Fw
-		fwName = baseName + "_Fw"
-		fName = vwLoadedScans[useI] + "_freq"
-		maskName = baseName + "_fitMask"
-		fitName = "fit_" + fwName
+		wireFw = baseName + "_Fw"
+		delWireFw = wireFw + "sdev"
+		wireFreq = vwScans_Name[useI] + "_freq"
+		wireFwMask = baseName + "_fm"
+		wireFwFit = "fit_" + wireFw
 		// Append and format Fw
-		AppendToGraph $fwName vs $fName
-		ModifyGraph mode($fwName) = 3, marker($fwName) = 8, msize($fwName)=2, rgb($fwName) = (0,0,0)
-		AppendToGraph $fitName
-		AppendToGraph/R $maskName vs $fName
-		ModifyGraph lstyle($maskName)=2,lsize($maskName)=1.5, rgb($maskName)=(39168,39168,39168)
+		AppendToGraph $wireFw vs $wireFreq
+		ModifyGraph mode($wireFw) = 3, marker($wireFw) = 8, msize($wireFw)=2, rgb($wireFw) = (0,0,0)
+		AppendToGraph $wireFwFit
+		ErrorBars $wireFw, Y wave=($delWireFw, $delWireFw)
+		// Skip fitMask if this index is included in logBadScans
+		FindValue/V=(i) logBadScans
+		if (V_value == -1)
+			AppendToGraph/R $wireFwMask vs $wireFreq
+			ModifyGraph lstyle($wireFwMask)=2,lsize($wireFwMask)=1.5, rgb($wireFwMask)=(39168,39168,39168)
+			Label right "Fitting Mask"
+		endif
 		// Textbox
-		SprintF Cmd, "n = %s", num2str(vwScanModes[useI])
+		SprintF Cmd, "n = %s", num2str(vwScans_Harm[useI])
 		TextBox/C/N=text0/A=LT/X=0.00/Y=0.00 Cmd
 		// Graph formatting
 		ModifyGraph grid(left)=2
@@ -1242,8 +1319,8 @@ EndMacro
 //	(requires that they were created by the earlier cma_vw_show functions, which have procedurally determinable names)
 Proc cma_vw_layout(baseName, iStart, iEnd)
 	String baseName
-	String graphName
 	Variable iStart, iEnd
+	String graphName
 	Variable i = iStart
 	PauseUpdate; Silent 1
 	Layout/C=1/W=(5.25,43.25,373.5,475.25)
@@ -1258,12 +1335,12 @@ EndMacro
 //------------------------------------
 Proc cma_vw_results()
 	// Update n=1 frequencies
-	vw_fundFreq = fitDat_b / vwScanModes
+	vwFits_fundF = vwFits_b / vwScans_Harm
 	// Make results table	
-	Edit/W=(561.75,53,1419.75,247.25) vwLoadedScans,vwScanCurrents,vwScanModes,vwScan_MaxAmps
-	AppendToTable vwScan_SinNs,vw_fundFreq, fitDat_a,fitDat_b,fitDat_c,fitDat_d,vw_SinSeriesBn
-	ModifyTable format(Point)=1,width(Point)=30,width(vwScanCurrents)=82,width(vwScanModes)=68
-	ModifyTable width(vw_fundFreq)=64, width(fitDat_a)=68,width(fitDat_b)=60,width(fitDat_c)=66,width(fitDat_d)=68
+	Edit/W=(561.75,53,1419.75,247.25) vwScans_Name,vwScans_Curr,vwScans_delCurr,vwScans_Harm,vwScans_MxNrmAmp
+	AppendToTable vwScans_SinN,vwFits_fundF, vwFits_a,vwFits_b,vwFits_c,vwFits_d,vwFits_Bcoeffs
+	ModifyTable format(Point)=1,width(Point)=30,width(vwScans_Curr)=82,width(vwScans_Harm)=68
+	ModifyTable width(vwFits_fundF)=64, width(vwFits_a)=68,width(vwFits_b)=60,width(vwFits_c)=66,width(vwFits_d)=68
 	// Tabulate logged snarls in data
 	Edit/W=(824,78.25,1397,209.5) logBadPh_scan,logBadPh_i,logBadFw_scan,logBadFw_i
 	AppendToTable logBadScans, logBadFits,logNodeCutoffs
@@ -1277,21 +1354,36 @@ EndMacro
 //------------------------------------
 Window cma_vw_plotBn() : Graph
 	PauseUpdate; Silent 1
-	Display /W=(1026.75,278,1421.25,486.5) vw_SinSeriesBn vs vwScanModes
+	Display /W=(1026.75,278,1421.25,486.5) vwFits_Bcoeffs vs vwScans_Harm
 	ModifyGraph mode=8, marker=8, rgb=(0,0,65280), msize=2, grid=2
 	Label left "Sine Series Stregnth (arb.) \\u#2"
 	Label bottom "Wire Harmonic (n)"
-	TextBox/C/N=text0/X=1.00/Y=1.00 "\\s(vw_SinSeriesBn) VW Scan"
+	TextBox/C/N=text0/X=1.00/Y=1.00 "\\s(vwFits_Bcoeffs) VW Scan"
+EndMacro
+
+//------------------------------------
+Window cma_vw_plotB() : Graph
+	PauseUpdate; Silent 1		// building window...
+	Display /W=(106.5,159.5,483.75,352.25) vw_Blo,vw_Bhi,vw_B
+	ModifyGraph mode(vw_Blo)=7,mode(vw_Bhi)=7, lStyle(vw_Blo)=1,lStyle(vw_Bhi)=1, grid(left)=2
+	ModifyGraph rgb(vw_Blo)=(36864,14592,58880),rgb(vw_Bhi)=(36864,14592,58880),rgb(vw_B)=(0,0,65280)
+	ModifyGraph hbFill(vw_Bhi)=5
+	ModifyGraph useNegPat=1, useNegRGB(vw_B)=1, hBarNegFill(vw_Blo)=5,hBarNegFill(vw_B)=5
+	ModifyGraph negRGB(vw_B)=(65535,65535,65535)
+	ModifyGraph toMode(vw_Blo)=1,toMode(vw_Bhi)=1
+	Label left "Magnetic Field (T)"
+	Label bottom "Longitudinal Position (mm)"
+	TextBox/C/N=text0/A=RB/X=2.00/Y=15.00 " \\s(vw_B) VW Field Reconstruction\r\\s(vw_Blo)+/-\\s(vw_Bhi)Uncertainty envelope"
 EndMacro
 
 //------------------------------------
 Window cma_vw_plotFund() : Graph
 	PauseUpdate; Silent 1
-	Display /W=(1028.25,518,1422.75,701.75) vw_fundFreq vs vwScanModes
+	Display /W=(1028.25,518,1422.75,701.75) vwFits_fundF vs vwScans_Harm
 	ModifyGraph rgb=(39168,39168,39168), grid(left)=2
 	Label left "Frequency of Wire 1st Harmonic (Hz)"
 	Label bottom "Wire Harmonic (n)"
-	WaveStats/Q vw_fundFreq
+	WaveStats/Q vwFits_fundF
 	SetAxis left Floor(V_min),Ceil(V_max)
 EndMacro
 
@@ -1300,33 +1392,34 @@ EndMacro
 Proc cma_vw_plotN(chNum, useN)
 	Variable chNum, useN
 	Variable useI
-	String baseName, fName, maskName, phiName, dphiName, wName, dwName, Cmd
-	String fwName, fitName
+	String baseName, wireFreq, wireFwMask, wirePhase, delWirePhase, wireDisp, delWireDisp, Cmd
+	String wireFw, wireFwFit, delWireFw
 	PauseUpdate; Silent 1
 	// Find index for desired mode number
-	Make/O/N=(DimSize(vwScanModes,0)) tempI
-	tempI = Abs(vwScanModes - useN)
+	Make/O/N=(DimSize(vwScans_Harm,0)) tempI
+	tempI = Abs(vwScans_Harm - useN)
 	WaveStats/Q tempI
 	useI = V_minloc
 	// Get wave names
-	baseName = vwLoadedScans[useI] + "_ch" + num2str(chNum)
-	fName = vwLoadedScans[useI] + "_freq"
-	maskName = baseName + "_fitMask"
-	phiName = baseName + "_PavgAdj"
-	dphiName = baseName + "_PsdevAdj"
-	wName = baseName + "_Uavg"
-	dwName = baseName + "_Usdev"	
-	fwName = baseName + "_Fw"
-	fitName = "fit_" + fwName
+	baseName = vwScans_Name[useI] + "_ch" + num2str(chNum)
+	wireFreq = vwScans_Name[useI] + "_freq"
+	wireFwMask = baseName + "_fm"
+	wirePhase = baseName + "_PavgAdj"
+	delWirePhase = baseName + "_PsdevAdj"
+	wireDisp = baseName + "_Uavg"
+	delWireDisp = baseName + "_Usdev"	
+	wireFw = baseName + "_Fw"
+	wireFwFit = "fit_" + wireFw
+	delWireFw = wireFw + "sdev"
 	// First plot: wire displacement
-	Display $wName vs $fName
-	ErrorBars $wName Y,wave=($dwName,$dwName)
-	ModifyGraph rgb($wName) = (65280,0,0)
+	Display $wireDisp vs $wireFreq
+	ErrorBars $wireDisp Y,wave=($delWireDisp,$delWireDisp)
+	ModifyGraph rgb($wireDisp) = (65280,0,0)
 	// Append and format phase difference between wire pos and drive current
-	AppendToGraph/R $phiName vs $fName
-	ErrorBars $phiName Y,wave=($dphiName,$dphiName)
-	ModifyGraph rgb($phiName) = (24576,24576,65280)
-	SprintF Cmd, "n = %s", num2str(vwScanModes[useI])
+	AppendToGraph/R $wirePhase vs $wireFreq
+	ErrorBars $wirePhase Y,wave=($delWirePhase,$delWirePhase)
+	ModifyGraph rgb($wirePhase) = (24576,24576,65280)
+	SprintF Cmd, "n = %s", num2str(vwScans_Harm[useI])
 	TextBox/C/N=text0/A=LT/X=0.00/Y=0.00 Cmd
 	// Formatting
 	ModifyGraph mode=4,marker=8,lstyle=1,grid(left)=2
@@ -1335,13 +1428,19 @@ Proc cma_vw_plotN(chNum, useN)
 	Label bottom "Frequency (Hz)"
 	// ---
 	// Second plot: Fw
-	Display $fwName vs $fName
-	ModifyGraph mode($fwName) = 3, marker($fwName) = 8, msize($fwName)=2, rgb($fwName) = (0,0,0)
-	AppendToGraph $fitName
-	AppendToGraph/R $maskName vs $fName
-	ModifyGraph lstyle($maskName)=2,lsize($maskName)=1.5, rgb($maskName)=(39168,39168,39168)
+	Display $wireFw vs $wireFreq
+	ErrorBars $wireFw Y,wave=($delWireFw,$delWireFw)
+	ModifyGraph mode($wireFw) = 3, marker($wireFw) = 8, msize($wireFw)=2, rgb($wireFw) = (0,0,0)
+	AppendToGraph $wireFwFit
+	// Skip fitMask if its index is included in logBadScans
+	FindValue/V=(useN) logBadScans
+	if (V_value == -1)
+		AppendToGraph/R $wireFwMask vs $wireFreq
+		ModifyGraph lstyle($wireFwMask)=2,lsize($wireFwMask)=1.5, rgb($wireFwMask)=(39168,39168,39168)
+		Label right "Fitting Mask"
+	endif
 	// Textbox
-	SprintF Cmd, "n = %s", num2str(vwScanModes[useI])
+	SprintF Cmd, "n = %s", num2str(vwScans_Harm[useI])
 	TextBox/C/N=text0/A=LT/X=0.00/Y=0.00 Cmd
 	// Graph formatting
 	ModifyGraph grid(left)=2
@@ -1397,11 +1496,11 @@ Proc cma_vw_modAP(chNum, useList)
 		nextScan = "fscan_n" + nextN
 		nextWire = "fscan_n" + nextN + "_ch" + num2str(chNum) + "_Uavg"
 		nextPh =  "fscan_n" + nextN + "_ch" + num2str(chNum) + "_PavgAdj"
-		FindValue /TEXT=nextScan vwLoadedScans
+		FindValue /TEXT=nextScan vwScans_Name
 		if(V_value == -1)
-			Print "Warning! Expected scan not found in vwLoadedScans!"
+			Print "Warning! Expected scan not found in vwScans_Name!"
 		endif
-		nextFreq = fitDat_b[V_value]		
+		nextFreq = vwFits_b[V_value]		
 		// Offset and scale traces to put the minimum value at 0.1 and the max at 1.0 arbitrary units
 		WaveStats/Q $nextWire
 		ampPk = V_max
@@ -1416,7 +1515,7 @@ Proc cma_vw_modAP(chNum, useList)
 	while(i < nPts)
 	Label left "Wire Amplitude (r.u.)";DelayUpdate
 	Label bottom "Frequency about Resonance (Hz)";DelayUpdate
-	Label right "Wire Phase (deg)"
+	Label right "Wire Phase (°)"
 	ModifyGraph mode=0
 	SetAxis left 0,1
 EndMacro
@@ -1445,6 +1544,8 @@ Proc cma_vw_showAA(useList)
 		AppendToGraph $nextWire vs $nextF
 		ErrorBars $nextWire Y,wave=($nextDWire,$nextDWire)
 		ModifyGraph lstyle($nextWire)=1
+//		AppendToGraph/R $nextPh vs $nextF
+//		ModifyGraph rgb($nextPh) = (24576,24576,65280)
 		// ---
 		// Channel 2
 		nextWire = "fscan_n" + nextN + "_ch2_Uavg"
@@ -1455,6 +1556,8 @@ Proc cma_vw_showAA(useList)
 		ErrorBars $nextWire Y,wave=($nextDWire,$nextDWire)
 		ModifyGraph rgb($nextWire) = (19456,39168,0)
 		ModifyGraph lstyle($nextWire)=3
+//		AppendToGraph/R $nextPh vs $nextF
+//		ModifyGraph rgb($nextPh) = (36864,14592,58880)
 		i += 1
 	while(i<nPts)
 	ModifyGraph mode=4, marker=8, grid(left)=2, grid(bottom)=2
@@ -1479,11 +1582,11 @@ Proc cma_vw_modAA(useList)
 		nextScan = "fscan_n" + nextN
 		nextWire = "fscan_n" + nextN + "_ch1_Uavg"
 		nextPh =  "fscan_n" + nextN + "_ch1_PavgAdj"
-		FindValue /TEXT=nextScan vwLoadedScans
+		FindValue /TEXT=nextScan vwScans_Name
 		if(V_value == -1)
-			Print "Warning! Expected scan not found in vwLoadedScans!"
+			Print "Warning! Expected scan not found in vwScans_Name!"
 		endif
-		nextFreq = fitDat_b[V_value]
+		nextFreq = vwFits_b[V_value]
 		// Offsets
 		WaveStats/Q $nextWire
 		ampPk = V_max
@@ -1493,14 +1596,15 @@ Proc cma_vw_modAA(useList)
 		ampOffset *= ampMul
 		ModifyGraph muloffset($nextWire)={0,ampMul}
 		ModifyGraph offset($nextWire)={-nextFreq,ampOffset}
+//		ModifyGraph offset($nextPh)={-nextFreq,0}
 		// Channel 2
 		nextWire = "fscan_n" + nextN + "_ch2_Uavg"
 		nextPh =  "fscan_n" + nextN + "_ch2_PavgAdj"
-		FindValue /TEXT=nextScan vwLoadedScans
+		FindValue /TEXT=nextScan vwScans_Name
 		if(V_value == -1)
-			Print "Warning! Expected scan not found in vwLoadedScans!"
+			Print "Warning! Expected scan not found in vwScans_Name!"
 		endif
-		nextFreq = fitDat_b[V_value]
+		nextFreq = vwFits_b[V_value]
 		// Offsets
 		WaveStats/Q $nextWire
 		ampPk = V_max
@@ -1510,10 +1614,12 @@ Proc cma_vw_modAA(useList)
 		ampOffset *= ampMul
 		ModifyGraph muloffset($nextWire)={0,ampMul}
 		ModifyGraph offset($nextWire)={-nextFreq,ampOffset}
+//		ModifyGraph offset($nextPh)={-nextFreq,0}
 		i += 1
 	while(i < nPts)
 	Label left "Wire Amplitude (r.u.)"
 	Label bottom "Frequency about Resonance (Hz)"
+//	Label right "Wire Phase (deg)"
 	ModifyGraph mode=0
 	SetAxis left 0,1
 EndMacro
