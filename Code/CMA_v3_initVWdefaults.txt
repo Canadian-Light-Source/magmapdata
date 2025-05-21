@@ -3,22 +3,25 @@
 # Default values can be adjusted here without needing to update the IPF files,
 # This file contains brief descriptors for each parameter. More details in CMA_vw,
 # Important: do not change the number of line breaks in this file!,
-# Last Updated Jul 2024 by Cameron B,
+# Last Updated Apr 2025 by Cameron B (added params),
 #,
 #,
-VWnodeCutoff,0.03
-VWgateCal1,1.89532e-05
-VWgateCal2,1.79862e-05
-VWwireL,3.46
-VWsensorPos_ch1,0.1137
-VWsensorPos_ch2,0.1254
-VWwireMassDensity,70.74e-06
-VWcleanPh1,20
-VWcleanPh2,40
-VWcleanPh3,30
-VWfwFitMask1,18
-VWfwFitMask2,20
-VWfwFitMask3,12
+SensorNodeCutoff,0.015
+SensorCal1,52760
+SensorCal2,55600
+WireLength,3.46
+SensorPos_ch1,0.1137
+SensorPos_ch2,0.1254
+WireMassDensity,70.74e-06
+PhaseCleaner1,20
+PhaseCleaner2,40
+PhaseCleaner3,30
+FwFitMask1,25
+FwFitMask2,20
+WireLengthErr,0.002
+WireMassDensErr,0.3e-06
+SensorPosErr,0.0005
+SensorCalErr,3020
 ImportingOldFiles,0
 #
 # EOF
